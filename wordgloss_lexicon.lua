@@ -210,9 +210,16 @@ function Lexicon:row(word)
 end
 
 -- 先查原词，再按后缀规则回退（只接受"回退词本身在词频包内"的情况）。
+-- 数据包给出 base 时，难度采用词形自身与 lemma 中更常见的那个排名。
 function Lexicon:resolve(word)
     local rank, base = self:row(word)
-    if rank then return rank, base end
+    if rank then
+        if base and base ~= "" and base ~= word then
+            local base_rank = self:row(base)
+            if base_rank and base_rank < rank then rank = base_rank end
+        end
+        return rank, base
+    end
     if word:find("%-") then
         local tail = word:match("([^%-]+)$")
         if tail and tail ~= word then
@@ -255,9 +262,10 @@ end
       reject_names    = boolean 只以大写形式出现过的词视为人名/地名，不注释
       lower_seen      = table   本书中出现过小写形式的词集合（word -> true）
       names           = table   已知专名集合（word -> true）
+      forced_words    = table   用户生词本集合（word -> true），命中时强制注释
   }
 
-返回：nil（不注释）或 { word=, base=, rank=, surface= }
+返回：nil（不注释）或 { word=, base=, rank=, surface=, forced= }
 ]]
 function Lexicon:classify(surface, options)
     if not surface or surface == "" then return nil end
@@ -265,25 +273,36 @@ function Lexicon:classify(surface, options)
     local word = Lexicon.normalize_hyphenated(surface)
     if not word then return nil end
 
-    if options.names and options.names[word] then return nil end
-    if options.reject_names ~= false then
-        local first = surface:match("^[^%a]*(%a)")
-        local starts_upper = first ~= nil and first == first:upper() and first ~= first:lower()
-        if starts_upper and not (options.lower_seen and options.lower_seen[word]) then
-            return nil
+    -- 先解析 lemma：用户可能把 lemma 加入生词本，而页面出现的是其变形。
+    local rank, base = self:resolve(word)
+    local resolved_base = base or word
+    local forced_words = options.forced_words
+    local forced = forced_words
+        and (forced_words[word] == true or forced_words[resolved_base] == true)
+
+    -- 用户明确加入 Vocabulary Builder 的词拥有最高优先级，跳过词频与专名过滤。
+    if not forced then
+        if options.names and options.names[word] then return nil end
+        if options.reject_names ~= false then
+            local first = surface:match("^[^%a]*(%a)")
+            local starts_upper = first ~= nil and first == first:upper() and first ~= first:lower()
+            if starts_upper and not (options.lower_seen and options.lower_seen[word]) then
+                return nil
+            end
+        end
+
+        local limit = tonumber(options.rank_limit) or Lexicon.level_rank(Lexicon.DEFAULT_LEVEL)
+        if rank and rank <= limit then
+            return nil  -- 在用户的词汇量之内
         end
     end
 
-    local rank, base = self:resolve(word)
-    local limit = tonumber(options.rank_limit) or Lexicon.level_rank(Lexicon.DEFAULT_LEVEL)
-    if rank and rank <= limit then
-        return nil  -- 在用户的词汇量之内
-    end
     return {
         word = word,
-        base = base or word,
+        base = resolved_base,
         rank = rank or Lexicon.RANK_UNKNOWN,
         surface = surface,
+        forced = forced and true or nil,
     }
 end
 
