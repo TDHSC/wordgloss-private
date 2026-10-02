@@ -23,6 +23,7 @@ local Cache = require("wordgloss_cache")
 local Book = require("wordgloss_book")
 local Lexicon = require("wordgloss_lexicon")
 local Dict = require("wordgloss_dict")
+local Vocab = require("wordgloss_vocab")
 local Page = require("wordgloss_page")
 local Overlay = require("wordgloss_overlay")
 local Prefetch = require("wordgloss_prefetch")
@@ -65,6 +66,7 @@ function wordgloss:init()
         -- 离线释义包（ECDICT 裁剪版）。文件缺失时它只是查不到东西，
         -- 不会让插件失效：联网翻译照旧工作。
         self.dict = Dict:new(self.path)
+        self.vocab = Vocab:new()
         self.book = Book:new(self.cache)
         self.prefetch = Prefetch:new(self)
         self._page_refresh_scheduled = false
@@ -758,6 +760,15 @@ function wordgloss:refreshGlosses(force)
     local book_id = self:getBookId()
     local lower = book_id and self.book:lower_seen(book_id) or {}
     local names = book_id and self.book:names(book_id) or {}
+    local forced_words = {}
+    if self.vocab then
+        local ok_vocab, words = pcall(function() return self.vocab:words() end)
+        if ok_vocab and type(words) == "table" then
+            forced_words = words
+        elseif not ok_vocab then
+            logger.warn("wordgloss: cannot refresh Vocabulary Builder:", tostring(words))
+        end
+    end
 
     self.overlay.font_size = self:getGlossFontSize()
     self.overlay.font_face = self:getSetting("font_face")
@@ -772,6 +783,7 @@ function wordgloss:refreshGlosses(force)
             reject_names = self:getSetting("reject_names", true) == true,
             lower_seen = lower,
             names = names,
+            forced_words = forced_words,
             lang = self:getGlossLangKey(),
             max_per_page = tonumber(self:getSetting("max_per_page", 6)) or 6,
             show_pos = self:showPos(),
