@@ -1,0 +1,387 @@
+name: Upstream Auto Bump
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-auto-bump
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/GangYe293/wordgloss.koplugin.git
+  UPSTREAM_REPO: GangYe293/wordgloss.koplugin
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out downstream without write credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect upstream update
+        id: detect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          base="$(tr -d '[:space:]' < .upstream-base)"
+          new="$(git ls-remote "$UPSTREAM_URL" refs/heads/main | awk '{print $1}')"
+          downstream_head="$(git rev-parse HEAD)"
+
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$new" =~ ^[0-9a-f]{40}$ ]]
+
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "short=${new:0:12}" >> "$GITHUB_OUTPUT"
+          echo "downstream_head=$downstream_head" >> "$GITHUB_OUTPUT"
+
+          if [[ "$base" == "$new" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream is already at $new"
+            exit 0
+          fi
+
+          if gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --search "$new in:body" \
+              --json number \
+              --jq 'length > 0' | grep -qx true; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "An open PR already tracks $new"
+            exit 0
+          fi
+
+          if gh issue list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --search "$new in:body" \
+              --json number \
+              --jq 'length > 0' | grep -qx true; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "An open issue already tracks $new"
+            exit 0
+          fi
+
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare review context
+        if: steps.detect.outputs.run == 'true'
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.detect.outputs.base }}
+          NEW_SHA: ${{ steps.detect.outputs.new }}
+          DOWNSTREAM_HEAD: ${{ steps.detect.outputs.downstream_head }}
+        run: |
+          set -euo pipefail
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "$UPSTREAM_URL"
+          else
+            git remote add upstream "$UPSTREAM_URL"
+          fi
+
+          git fetch --no-tags upstream main
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$NEW_SHA^{commit}"
+
+          if ! git merge-base --is-ancestor "$BASE_SHA" "$NEW_SHA"; then
+            echo "Upstream history was rewritten or .upstream-base is invalid." >&2
+            exit 1
+          fi
+
+          git config user.name "wordgloss-auto-bumper"
+          git config user.email "wordgloss-auto-bumper@users.noreply.github.com"
+
+          mkdir -p .amp-bump-context
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "NEW_SHA=$NEW_SHA"
+            echo "DOWNSTREAM_HEAD=$DOWNSTREAM_HEAD"
+          } > .amp-bump-context/meta.txt
+
+          git log --oneline --decorate "$BASE_SHA..$NEW_SHA" \
+            > .amp-bump-context/upstream-commits.txt
+          git diff --name-status "$BASE_SHA..$NEW_SHA" \
+            > .amp-bump-context/upstream-files.txt
+          git diff --name-status "$BASE_SHA..$DOWNSTREAM_HEAD" \
+            > .amp-bump-context/downstream-files.txt
+
+          git diff --name-only "$BASE_SHA..$NEW_SHA" | sort -u \
+            > .amp-bump-context/upstream-paths.txt
+          git diff --name-only "$BASE_SHA..$DOWNSTREAM_HEAD" | sort -u \
+            > .amp-bump-context/downstream-paths.txt
+          comm -12 \
+            .amp-bump-context/upstream-paths.txt \
+            .amp-bump-context/downstream-paths.txt \
+            > .amp-bump-context/overlap-files.txt
+
+          git diff --binary "$BASE_SHA..$NEW_SHA" \
+            > .amp-bump-context/upstream.diff
+          git diff --binary "$BASE_SHA..$DOWNSTREAM_HEAD" \
+            > .amp-bump-context/downstream.diff
+
+      - name: Install Amp CLI
+        if: steps.detect.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global @ampcode/cli
+          amp --version
+
+      - name: Review upstream delta with Amp
+        if: steps.detect.outputs.run == 'true'
+        id: amp
+        continue-on-error: true
+        shell: bash
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+          AMP_SKIP_UPDATE_CHECK: "1"
+          BASE_SHA: ${{ steps.detect.outputs.base }}
+          NEW_SHA: ${{ steps.detect.outputs.new }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${AMP_API_KEY:-}" ]]; then
+            echo "AMP_API_KEY repository secret is missing." >&2
+            exit 20
+          fi
+
+          cat > /tmp/amp-ci-settings.json <<'JSON'
+          {
+            "amp.updates.mode": "disabled",
+            "amp.tools.disable": ["Bash"]
+          }
+          JSON
+
+          rm -f .amp-bump-result.json
+
+          amp \
+            --settings-file /tmp/amp-ci-settings.json \
+            -x "AUTOMATED_UPSTREAM_BUMP
+          BASE_SHA=$BASE_SHA
+          NEW_SHA=$NEW_SHA
+
+          Read AGENTS.md, UPSTREAM_POLICY.md, and the complete .amp-bump-context
+          prepared by the workflow. This is analysis-only. Classify this exact
+          upstream delta and write .amp-bump-result.json exactly as instructed."
+
+      - name: Validate verdict and restore clean checkout
+        if: steps.detect.outputs.run == 'true'
+        id: verdict
+        shell: bash
+        env:
+          AMP_OUTCOME: ${{ steps.amp.outcome }}
+          DOWNSTREAM_HEAD: ${{ steps.detect.outputs.downstream_head }}
+        run: |
+          set -euo pipefail
+
+          decision="needs-human"
+          summary="Amp did not produce a valid unattended review result."
+          risks='["Amp execution or result validation failed."]'
+
+          if [[ "$AMP_OUTCOME" == "success" && -f .amp-bump-result.json ]] &&
+             jq -e '.decision == "safe" or .decision == "needs-human"' \
+               .amp-bump-result.json >/dev/null; then
+            decision="$(jq -r '.decision' .amp-bump-result.json)"
+            summary="$(jq -r '.summary // ""' .amp-bump-result.json)"
+            risks="$(jq -c '.risks // []' .amp-bump-result.json)"
+          fi
+
+          protected_regex='^(\.github/workflows/upstream-auto-bump\.yml|\.upstream-base|AGENTS\.md|UPSTREAM_POLICY\.md|tools/upstream-impact\.sh)$'
+          if grep -Eq "$protected_regex" .amp-bump-context/upstream-paths.txt; then
+            decision="needs-human"
+            summary="Upstream changes protected auto-bumper infrastructure."
+            risks='["Protected infrastructure path changed upstream."]'
+          fi
+
+          git reset --hard "$DOWNSTREAM_HEAD"
+          git clean -fd
+
+          {
+            echo "decision=$decision"
+            echo "summary<<EOF"
+            echo "$summary"
+            echo "EOF"
+            echo "risks=$risks"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mechanically merge safe upstream SHA
+        if: steps.detect.outputs.run == 'true' && steps.verdict.outputs.decision == 'safe'
+        id: merge
+        shell: bash
+        env:
+          NEW_SHA: ${{ steps.detect.outputs.new }}
+          SHORT_SHA: ${{ steps.detect.outputs.short }}
+        run: |
+          set -euo pipefail
+
+          git switch -c "upstream-bump/$SHORT_SHA"
+
+          if git merge --no-ff --no-edit "$NEW_SHA"; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort || true
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Syntax check safe candidate
+        if: steps.detect.outputs.run == 'true' && steps.merge.outputs.ok == 'true'
+        id: syntax
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua5.1
+
+          luac_bin="$(command -v luac5.1 || command -v luac)"
+          while IFS= read -r -d '' file; do
+            "$luac_bin" -p "$file"
+          done < <(find . -type f -name '*.lua' -not -path './.git/*' -print0)
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import py_compile
+          for path in Path("tools").glob("*.py"):
+              py_compile.compile(str(path), doraise=True)
+          PY
+
+          git diff --check
+
+      - name: Publish safe bump PR and merge
+        if: >-
+          steps.detect.outputs.run == 'true' &&
+          steps.verdict.outputs.decision == 'safe' &&
+          steps.merge.outputs.ok == 'true' &&
+          steps.syntax.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_SHA: ${{ steps.detect.outputs.new }}
+          SHORT_SHA: ${{ steps.detect.outputs.short }}
+          SUMMARY: ${{ steps.verdict.outputs.summary }}
+        run: |
+          set -euo pipefail
+
+          branch="upstream-bump/$SHORT_SHA"
+
+          printf '%s\n' "$NEW_SHA" > .upstream-base
+          git add .upstream-base
+          git commit --amend --no-edit
+
+          git merge-base --is-ancestor "$NEW_SHA" HEAD
+          git diff --check
+
+          git remote set-url origin \
+            "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          git push --force-with-lease --set-upstream origin "$branch"
+
+          body_file="$(mktemp)"
+          cat > "$body_file" <<EOF
+          Automated upstream bump.
+
+          Upstream: $UPSTREAM_REPO
+          New upstream SHA: $NEW_SHA
+
+          Amp verdict: safe
+
+          $SUMMARY
+          EOF
+
+          pr_url="$(
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$branch" \
+              --title "chore: bump WordGloss upstream to $SHORT_SHA" \
+              --body-file "$body_file"
+          )"
+
+          gh pr merge \
+            --repo "$GITHUB_REPOSITORY" \
+            --merge \
+            --delete-branch \
+            "$pr_url"
+
+      - name: Create human-review issue
+        if: >-
+          always() &&
+          steps.detect.outputs.run == 'true' &&
+          (
+            steps.verdict.outputs.decision == 'needs-human' ||
+            (
+              steps.verdict.outputs.decision == 'safe' &&
+              steps.merge.outputs.ok != 'true'
+            ) ||
+            (
+              steps.merge.outputs.ok == 'true' &&
+              steps.syntax.outcome != 'success'
+            )
+          )
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ steps.detect.outputs.base }}
+          NEW_SHA: ${{ steps.detect.outputs.new }}
+          SHORT_SHA: ${{ steps.detect.outputs.short }}
+          SUMMARY: ${{ steps.verdict.outputs.summary }}
+          RISKS: ${{ steps.verdict.outputs.risks }}
+          MERGE_OK: ${{ steps.merge.outputs.ok }}
+          SYNTAX_OUTCOME: ${{ steps.syntax.outcome }}
+        run: |
+          set -euo pipefail
+
+          gh label create needs-human \
+            --repo "$GITHUB_REPOSITORY" \
+            --color D93F0B \
+            --description "Upstream integration requires human judgment" \
+            --force
+
+          body_file="$(mktemp)"
+          {
+            echo "Automated upstream review requires human attention."
+            echo
+            echo "base_sha=$BASE_SHA"
+            echo "new_sha=$NEW_SHA"
+            echo "upstream=$UPSTREAM_REPO"
+            echo
+            echo "Amp summary:"
+            echo "$SUMMARY"
+            echo
+            echo "Risks:"
+            echo "$RISKS"
+            if [[ "$MERGE_OK" == "false" ]]; then
+              echo
+              echo "Git could not mechanically merge the candidate."
+            fi
+            if [[ "$SYNTAX_OUTCOME" == "failure" ]]; then
+              echo
+              echo "Post-merge syntax validation failed."
+            fi
+            echo
+            echo "Compare:"
+            echo "https://github.com/$UPSTREAM_REPO/compare/$BASE_SHA...$NEW_SHA"
+          } > "$body_file"
+
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Upstream review needed: $SHORT_SHA" \
+            --label needs-human \
+            --body-file "$body_file"
