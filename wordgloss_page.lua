@@ -85,6 +85,7 @@ end
       reject_names = 是否过滤只以大写出现的词
       lower_seen   = 本书小写出现过的词集合（会被就地补充）
       names        = 已知专名集合
+      forced_words = 用户生词本集合（word -> true）
       lang         = 目标语言（缓存键的一部分）
       max_gloss_chars = 注释字数上限（用于显示裁剪，超长会截断）
   }
@@ -116,6 +117,7 @@ function Page.build_glosses(document, page, config)
             reject_names = config.reject_names,
             lower_seen = lower_seen,
             names = config.names,
+            forced_words = config.forced_words,
         }) or nil
         if info then
             candidates[#candidates + 1] = {
@@ -125,8 +127,12 @@ function Page.build_glosses(document, page, config)
     end
     stats.candidates = #candidates
 
-    -- 生僻优先：超出一页上限时先保最生僻的词。
-    table.sort(candidates, function(a, b) return a.info.rank > b.info.rank end)
+    -- 用户手动加入生词本的词优先；剩余位置再按生僻程度排序。
+    table.sort(candidates, function(a, b)
+        local af, bf = a.info.forced == true, b.info.forced == true
+        if af ~= bf then return af end
+        return a.info.rank > b.info.rank
+    end)
     if config.max_per_page and config.max_per_page > 0 and #candidates > config.max_per_page then
         stats.dropped = #candidates - config.max_per_page
         for index = #candidates, config.max_per_page + 1, -1 do
