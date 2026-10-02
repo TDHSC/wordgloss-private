@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
   issues: write
 
 concurrency:
@@ -265,7 +264,7 @@ jobs:
 
           git diff --check
 
-      - name: Publish safe bump PR and merge
+      - name: Publish safe bump to main
         if: >-
           steps.detect.outputs.run == 'true' &&
           steps.verdict.outputs.decision == 'safe' &&
@@ -275,12 +274,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_SHA: ${{ steps.detect.outputs.new }}
-          SHORT_SHA: ${{ steps.detect.outputs.short }}
-          SUMMARY: ${{ steps.verdict.outputs.summary }}
+          DOWNSTREAM_HEAD: ${{ steps.detect.outputs.downstream_head }}
         run: |
           set -euo pipefail
-
-          branch="upstream-bump/$SHORT_SHA"
 
           printf '%s\n' "$NEW_SHA" > .upstream-base
           git add .upstream-base
@@ -291,34 +287,14 @@ jobs:
 
           git remote set-url origin \
             "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
-          git push --force-with-lease --set-upstream origin "$branch"
 
-          body_file="$(mktemp)"
-          cat > "$body_file" <<EOF
-          Automated upstream bump.
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          if [[ "$remote_main" != "$DOWNSTREAM_HEAD" ]]; then
+            echo "main moved during this run; refusing to overwrite it." >&2
+            exit 1
+          fi
 
-          Upstream: $UPSTREAM_REPO
-          New upstream SHA: $NEW_SHA
-
-          Amp verdict: safe
-
-          $SUMMARY
-          EOF
-
-          pr_url="$(
-            gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base main \
-              --head "$branch" \
-              --title "chore: bump WordGloss upstream to $SHORT_SHA" \
-              --body-file "$body_file"
-          )"
-
-          gh pr merge \
-            --repo "$GITHUB_REPOSITORY" \
-            --merge \
-            --delete-branch \
-            "$pr_url"
+          git push origin HEAD:main
 
       - name: Create human-review issue
         if: >-
