@@ -22,6 +22,7 @@ local GlossMod = require("wordgloss_gloss")
 local Lexicon = require("wordgloss_lexicon")
 local Providers = require("wordgloss_providers")
 local Dict = require("wordgloss_dict")
+local Vocab = require("wordgloss_vocab")
 local AI = require("wordgloss_ai")
 
 local Prefetch = {}
@@ -54,6 +55,7 @@ local function default_deps(plugin_path)
         cache = cache,
         lexicon = Lexicon:new(plugin_path),
         dict = Dict:new(plugin_path),
+        vocab = Vocab:new(),
         book = Book:new(cache),
         tools = Tools,
         epub = Epub,
@@ -109,6 +111,18 @@ function Prefetch.run_worker(args, deps)
         chapters_done = 0, chapters_total = 0, current_index = tonumber(args.first_index) or 1,
     }
     local use_local, use_online = source_flags(args.gloss_source)
+
+    -- 每次章节/整本任务启动时读取一次 Vocabulary Builder 快照。
+    -- 整本运行期间保持一致；用户中途新增的词会在下一次增量/自动补翻译时进入。
+    local forced_words = {}
+    if deps.vocab and deps.vocab.words then
+        local ok_vocab, words = pcall(function() return deps.vocab:words(true) end)
+        if ok_vocab and type(words) == "table" then
+            forced_words = words
+        elseif not ok_vocab then
+            logger.warn("wordgloss: cannot load Vocabulary Builder in worker:", tostring(words))
+        end
+    end
 
     -- 注意顺序：write_progress / cancelled 必须**定义在第一次调用之前**。
     -- Lua 的 `local function f()` 是普通的局部变量赋值，写在调用点之后的话，
@@ -197,6 +211,7 @@ function Prefetch.run_worker(args, deps)
                 reject_names = false,   -- 预取按小写词判断；专名由上面的 names 表负责
                 names = names,
                 lower_seen = lower,
+                forced_words = forced_words,
             })
             if classified then rare[#rare + 1] = classified end
         end
