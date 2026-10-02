@@ -23,14 +23,19 @@ The workflow provides `.amp-bump-context/` with:
 Your task is analysis only.
 
 1. Inspect the complete upstream delta and the downstream delta.
-2. Trace semantic dependencies across files. File overlap alone does not decide safety.
+2. Trace semantic dependencies across files.
 3. Apply `UPSTREAM_POLICY.md`.
 4. Classify the exact requested update as `safe` or `needs-human`.
-5. Treat uncertainty as `needs-human`.
-6. Do not implement features, resolve conflicts, refactor, run external commands,
+5. Prefer `safe` unless you can identify a concrete downstream incompatibility.
+6. File overlap, large diffs, refactors, API/settings/cache/schema changes, and file moves
+   are review signals only. They require `needs-human` only when they produce a specific
+   conflict with downstream behavior or require owner judgment.
+7. The current downstream product delta is empty. Ordinary upstream product changes
+   should therefore normally be `safe`.
+8. Do not implement features, resolve conflicts, refactor, run external commands,
    contact remote services, push, create PRs/issues, or change GitHub state.
-7. Do not modify product files or auto-bumper infrastructure.
-8. The only file you may create or edit is `.amp-bump-result.json`.
+9. Do not modify product files or auto-bumper infrastructure.
+10. The only file you may create or edit is `.amp-bump-result.json`.
 
 Write `.amp-bump-result.json` with this schema:
 
@@ -48,8 +53,10 @@ or:
 ```json
 {
   "decision": "needs-human",
-  "summary": "exact behavior or compatibility concern",
-  "risks": ["specific risk"],
+  "summary": "specific downstream conflict or owner decision required",
+  "risks": ["specific actionable risk"],
   "reviewed_files": ["path"]
 }
 ```
+
+A `needs-human` result must name the concrete affected downstream behavior or decision.
