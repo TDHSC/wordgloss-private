@@ -162,7 +162,9 @@ function Words:_ensure_known_table()
 end
 
 function Words:_load_known()
-    if not self:_ensure_known_table() then return {} end
+    if not self:_ensure_known_table() then
+        return nil, "known_words table unavailable"
+    end
     local db = self.cache:open()
     local words = {}
     local ok, err = pcall(function()
@@ -177,17 +179,20 @@ function Words:_load_known()
         pcall(function() stmt:close() end)
     end)
     if not ok then
-        logger.warn("wordgloss: cannot read known_words:", tostring(err))
-        return {}
+        return nil, tostring(err)
     end
     return words
 end
 
 function Words:known(force)
-    if force or self._known == nil then
-        self._known = self:_load_known()
+    if not force and self._known ~= nil then return self._known end
+    local words, err = self:_load_known()
+    if words then
+        self._known = words
+    else
+        logger.warn("wordgloss: cannot read known_words:", tostring(err))
     end
-    return self._known
+    return self._known or {}
 end
 
 function Words:known_match(raw)
