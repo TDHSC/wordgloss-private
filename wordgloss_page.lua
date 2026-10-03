@@ -85,6 +85,7 @@ end
       reject_names = 是否过滤只以大写出现的词
       lower_seen   = 本书小写出现过的词集合（会被就地补充）
       names        = 已知专名集合
+      known_words  = 用户已掌握词集合（word -> true）
       forced_words = 用户生词本集合（word -> true）
       lang         = 目标语言（缓存键的一部分）
       max_gloss_chars = 注释字数上限（用于显示裁剪，超长会截断）
@@ -117,6 +118,7 @@ function Page.build_glosses(document, page, config)
             reject_names = config.reject_names,
             lower_seen = lower_seen,
             names = config.names,
+            known_words = config.known_words,
             forced_words = config.forced_words,
         }) or nil
         if info then
