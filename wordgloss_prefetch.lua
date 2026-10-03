@@ -22,7 +22,7 @@ local GlossMod = require("wordgloss_gloss")
 local Lexicon = require("wordgloss_lexicon")
 local Providers = require("wordgloss_providers")
 local Dict = require("wordgloss_dict")
-local Vocab = require("wordgloss_vocab")
+local Words = require("wordgloss_words")
 local AI = require("wordgloss_ai")
 
 local Prefetch = {}
@@ -51,11 +51,12 @@ end
 
 local function default_deps(plugin_path)
     local cache = Cache:new()
+    local lexicon = Lexicon:new(plugin_path)
     return {
         cache = cache,
-        lexicon = Lexicon:new(plugin_path),
+        lexicon = lexicon,
         dict = Dict:new(plugin_path),
-        vocab = Vocab:new(),
+        words = Words:new{ cache = cache, lexicon = lexicon },
         book = Book:new(cache),
         tools = Tools,
         epub = Epub,
@@ -92,8 +93,8 @@ args 必须能被子进程直接读到（都是普通字符串/数字）：
   gloss_source（"local_first" / "local_only" / "online_only"，缺省按 local_first），
   first_index, last_index, progress_path, cancel_path
 
-deps 可注入（测试用）：cache / lexicon / dict / book / tools / epub / gloss / providers，
-以及 cancelled 回调（返回 true 表示应当中止）。
+deps 可注入（测试用）：cache / lexicon / dict / words / book / tools / epub / gloss /
+providers，以及 cancelled 回调（返回 true 表示应当中止）。
 
 返回一个可序列化的 summary 表。
 ]]
@@ -112,15 +113,18 @@ function Prefetch.run_worker(args, deps)
     }
     local use_local, use_online = source_flags(args.gloss_source)
 
-    -- 每次章节/整本任务启动时读取一次 Vocabulary Builder 快照。
-    -- 整本运行期间保持一致；用户中途新增的词会在下一次增量/自动补翻译时进入。
-    local forced_words = {}
-    if deps.vocab and deps.vocab.words then
-        local ok_vocab, words = pcall(function() return deps.vocab:words(true) end)
-        if ok_vocab and type(words) == "table" then
-            forced_words = words
-        elseif not ok_vocab then
-            logger.warn("wordgloss: cannot load Vocabulary Builder in worker:", tostring(words))
+    -- 每次章节/整本任务启动时读取一次用户词汇状态快照。
+    -- 整本运行期间保持一致；中途改动会在下一次增量/自动补翻译时进入。
+    local known_words, forced_words = {}, {}
+    if deps.words then
+        local ok_words, known, forced = pcall(function()
+            return deps.words:known(true), deps.words:vocabulary(true)
+        end)
+        if ok_words then
+            if type(known) == "table" then known_words = known end
+            if type(forced) == "table" then forced_words = forced end
+        else
+            logger.warn("wordgloss: cannot load user word state in worker:", tostring(known))
         end
     end
 
@@ -211,6 +215,7 @@ function Prefetch.run_worker(args, deps)
                 reject_names = false,   -- 预取按小写词判断；专名由上面的 names 表负责
                 names = names,
                 lower_seen = lower,
+                known_words = known_words,
                 forced_words = forced_words,
             })
             if classified then rare[#rare + 1] = classified end
