@@ -1573,7 +1573,8 @@ function UI.build_prefetch_menu(plugin)
             local enabled = plugin:getSetting("auto_prefetch", false) == true
             plugin:saveSetting("auto_prefetch", not enabled)
             if not enabled then
-                UI.showInfo(_("已开启：翻页遇到没有释义的生词时会自动联网翻译当前章"))
+                UI.showInfo(_("已开启：当前页或翻页遇到没有释义的生词时会自动翻译当前章"))
+                plugin:scheduleGlossRefresh()
             end
         end,
     })
