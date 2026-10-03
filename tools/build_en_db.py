@@ -23,10 +23,13 @@ Output
 ------
 SQLite db with one table::
 
-    lex(word TEXT PRIMARY KEY, rank INTEGER, base TEXT)
+    lex(word TEXT PRIMARY KEY, rank INTEGER, base TEXT, lemma TEXT)
 
-    rank rows : word is a base word, ``rank`` is its corpus rank, base NULL
-    form rows : word is an inflection, ``rank`` is its base's rank, base = stem
+    ranked rows: rank is the effective difficulty rank. base stays NULL so a
+                 ranked word keeps its own gloss; lemma records its linguistic
+                 lemma when one exists.
+    form rows  : rank is the lemma's rank, base = lemma for gloss fallback,
+                 lemma = lemma.
 
 Usage::
 
@@ -103,24 +106,27 @@ def build(dict_path, lemma_path, out_path, max_rank):
     conn = sqlite3.connect(out_path)
     conn.execute("PRAGMA journal_mode=OFF;")
     conn.execute("PRAGMA synchronous=OFF;")
-    conn.execute("CREATE TABLE lex (word TEXT PRIMARY KEY, rank INTEGER, base TEXT);")
+    conn.execute("CREATE TABLE lex (word TEXT PRIMARY KEY, rank INTEGER, base TEXT, lemma TEXT);")
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
 
     rows = {}
     for word, rank in ranks.items():
         stem = forms.get(word)
         if stem and stem in ranks:
-            rows[word] = (min(rank, ranks[stem]), stem)
+            # Ranked inflections keep their own gloss (base=NULL) while their
+            # lemma only influences difficulty and forced-vocabulary matching.
+            rows[word] = (min(rank, ranks[stem]), None, stem)
         else:
-            rows[word] = (rank, None)
+            rows[word] = (rank, None, None)
     for form, stem in forms.items():
         if form not in rows:
-            rows[form] = (ranks[stem], stem)
+            rows[form] = (ranks[stem], stem, stem)
 
-    conn.executemany("INSERT INTO lex(word, rank, base) VALUES(?, ?, ?);",
-                     ((word, rank, base) for word, (rank, base) in rows.items()))
+    conn.executemany("INSERT INTO lex(word, rank, base, lemma) VALUES(?, ?, ?, ?);",
+                     ((word, rank, base, lemma)
+                      for word, (rank, base, lemma) in rows.items()))
     conn.executemany("INSERT INTO meta(key, value) VALUES(?, ?);", [
-        ("format", "1"),
+        ("format", "2"),
         ("max_rank", str(max_rank)),
         ("base_words", str(len(ranks))),
         ("forms", str(len(forms))),
