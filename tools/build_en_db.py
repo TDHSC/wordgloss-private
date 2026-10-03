@@ -81,8 +81,9 @@ def read_forms(path, ranks):
                 form = raw.split("/")[0].strip()
                 if not ALPHA_RE.match(form) or form == stem:
                     continue
-                if form in ranks:
-                    continue  # already a row of its own with a real rank
+                # Keep lemma information even when the inflected form has its
+                # own corpus rank. Runtime difficulty should use the more common
+                # of the form and its lemma (said -> say).
                 forms.setdefault(form, stem)
     return forms
 
@@ -105,10 +106,19 @@ def build(dict_path, lemma_path, out_path, max_rank):
     conn.execute("CREATE TABLE lex (word TEXT PRIMARY KEY, rank INTEGER, base TEXT);")
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);")
 
-    conn.executemany("INSERT INTO lex(word, rank, base) VALUES(?, ?, NULL);",
-                     ((word, rank) for word, rank in ranks.items()))
+    rows = {}
+    for word, rank in ranks.items():
+        stem = forms.get(word)
+        if stem and stem in ranks:
+            rows[word] = (min(rank, ranks[stem]), stem)
+        else:
+            rows[word] = (rank, None)
+    for form, stem in forms.items():
+        if form not in rows:
+            rows[form] = (ranks[stem], stem)
+
     conn.executemany("INSERT INTO lex(word, rank, base) VALUES(?, ?, ?);",
-                     ((form, ranks[stem], stem) for form, stem in forms.items()))
+                     ((word, rank, base) for word, (rank, base) in rows.items()))
     conn.executemany("INSERT INTO meta(key, value) VALUES(?, ?);", [
         ("format", "1"),
         ("max_rank", str(max_rank)),
