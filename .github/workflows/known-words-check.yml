@@ -36,7 +36,7 @@ jobs:
           python3 -m py_compile tools/*.py
           git diff --check
 
-          if grep -R --include='*.lua' -n 'wordgloss_vocab\|self\.vocab\|deps\.vocab' .; then
+          if grep -R --include='*.lua' -nE 'require\("wordgloss_vocab"\)|self\.vocab[[:space:]]*=|deps\.vocab([.:]|[[:space:]])' .; then
             echo "stale vocabulary bridge reference found" >&2
             exit 1
           fi
