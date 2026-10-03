@@ -68,8 +68,20 @@ Any upstream change to these paths always requires human review:
 
 ## Current downstream invariants
 
-Until explicit downstream product changes are added, preserve the imported upstream
-behavior exactly. The current downstream product delta is empty, so ordinary upstream
-product changes should normally be classified `safe`.
+Preserve these intentional private downstream behaviors across upstream bumps:
 
-Add intentional downstream behavior here when custom product logic is introduced.
+1. KOReader Vocabulary Builder words are forced WordGloss candidates. A saved surface
+   form or its lemma bypasses the normal rank and proper-name filters.
+2. Saved Vocabulary Builder words receive priority within the per-page annotation cap.
+3. Vocabulary Builder changes are detected from the SQLite database together with its
+   WAL/SHM files, so newly saved words become visible on subsequent page refreshes.
+4. Current-chapter translation, whole-book incremental translation, whole-book overwrite,
+   and reading-time auto-prefetch all use the same Vocabulary Builder override.
+5. Enabling reading-time auto-prefetch refreshes the current page immediately so a newly
+   saved vocabulary word can trigger translation without waiting for another page turn.
+6. Inflection difficulty uses a separate lemma relationship. Ranked inflections use the
+   more common effective difficulty rank while keeping their own gloss/cache identity.
+   Example: `said` inherits the frequency of `say` without redirecting its gloss to
+   `say`.
+7. The compact lexicon schema v2 keeps `base` for gloss fallback and `lemma` for
+   difficulty/vocabulary matching. Future data-pack rebuilds must preserve that separation.
