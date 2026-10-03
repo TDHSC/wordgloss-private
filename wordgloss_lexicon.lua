@@ -272,6 +272,7 @@ end
       reject_names    = boolean 只以大写形式出现过的词视为人名/地名，不注释
       lower_seen      = table   本书中出现过小写形式的词集合（word -> true）
       names           = table   已知专名集合（word -> true）
+      known_words     = table   用户明确标记已掌握的词（最高优先级，直接跳过）
       forced_words    = table   用户生词本集合（word -> true），命中时强制注释
   }
 
@@ -287,6 +288,17 @@ function Lexicon:classify(surface, options)
     local rank, base, lemma = self:resolve(word)
     local resolved_base = base or word
     local resolved_lemma = lemma or base or word
+
+    -- 用户明确标记"已掌握"的词拥有最高优先级：即使它也在 Vocabulary
+    -- Builder 里，也不再注释、不再进入预取。
+    local known_words = options.known_words
+    if known_words
+        and (known_words[word] == true
+            or known_words[resolved_base] == true
+            or known_words[resolved_lemma] == true) then
+        return nil
+    end
+
     local forced_words = options.forced_words
     local forced = forced_words
         and (forced_words[word] == true
