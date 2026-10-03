@@ -9,6 +9,8 @@
 --   wordgloss_page.lua       当前页单词遍历 + 注释装配
 --   wordgloss_epub.lua       EPUB 章节/段落解析（预取需要）
 --   wordgloss_cache.lua      释义缓存与每本书状态（SQLite/WAL）
+--   wordgloss_words.lua      生词本 + WordGloss 已掌握词状态
+--   wordgloss_dict_actions.lua 查词弹窗里的“我已掌握”动作
 --   wordgloss_ui.lua         菜单与对话框
 --   wordgloss_update.lua     自动更新（GitHub Release，校验后替换插件目录）
 --   wordgloss_sha2.lua       SHA-256（只给更新包校验用）
@@ -23,7 +25,8 @@ local Cache = require("wordgloss_cache")
 local Book = require("wordgloss_book")
 local Lexicon = require("wordgloss_lexicon")
 local Dict = require("wordgloss_dict")
-local Vocab = require("wordgloss_vocab")
+local Words = require("wordgloss_words")
+local DictActions = require("wordgloss_dict_actions")
 local Page = require("wordgloss_page")
 local Overlay = require("wordgloss_overlay")
 local Prefetch = require("wordgloss_prefetch")
@@ -66,9 +69,10 @@ function wordgloss:init()
         -- 离线释义包（ECDICT 裁剪版）。文件缺失时它只是查不到东西，
         -- 不会让插件失效：联网翻译照旧工作。
         self.dict = Dict:new(self.path)
-        self.vocab = Vocab:new()
+        self.words = Words:new{ cache = self.cache, lexicon = self.lexicon }
         self.book = Book:new(self.cache)
         self.prefetch = Prefetch:new(self)
+        DictActions.register(self)
         self._page_refresh_scheduled = false
         self._lower_dirty = false
         self._auto_prefetch_at = 0
@@ -110,6 +114,10 @@ function wordgloss:addToMainMenu(menu_items)
 end
 
 function wordgloss:onReaderReady()
+    -- ReaderDictionary may be registered after plugin init on some KOReader builds.
+    -- Registration is idempotent, so retry at reader-ready time.
+    pcall(function() DictActions.register(self) end)
+
     -- 绘制层：ReaderView 会把注册过的模块在页面之后画到同一个 blitbuffer 上。
     if not self.overlay and self.ui and self.ui.view then
         self.overlay = Overlay:new{
@@ -760,13 +768,16 @@ function wordgloss:refreshGlosses(force)
     local book_id = self:getBookId()
     local lower = book_id and self.book:lower_seen(book_id) or {}
     local names = book_id and self.book:names(book_id) or {}
-    local forced_words = {}
-    if self.vocab then
-        local ok_vocab, words = pcall(function() return self.vocab:words() end)
-        if ok_vocab and type(words) == "table" then
-            forced_words = words
-        elseif not ok_vocab then
-            logger.warn("wordgloss: cannot refresh Vocabulary Builder:", tostring(words))
+    local known_words, forced_words = {}, {}
+    if self.words then
+        local ok_words, known, forced = pcall(function()
+            return self.words:known(), self.words:vocabulary()
+        end)
+        if ok_words then
+            if type(known) == "table" then known_words = known end
+            if type(forced) == "table" then forced_words = forced end
+        else
+            logger.warn("wordgloss: cannot refresh user word state:", tostring(known))
         end
     end
 
@@ -783,6 +794,7 @@ function wordgloss:refreshGlosses(force)
             reject_names = self:getSetting("reject_names", true) == true,
             lower_seen = lower,
             names = names,
+            known_words = known_words,
             forced_words = forced_words,
             lang = self:getGlossLangKey(),
             max_per_page = tonumber(self:getSetting("max_per_page", 6)) or 6,
