@@ -177,23 +177,35 @@ function Lexicon:available()
 end
 
 -- 查一行；结果缓存在内存里（一本书会有几千次查询）。
+-- v2 数据包多一个 lemma 列：lemma 只用于难度/生词本匹配，base 仍只负责释义重定向。
+-- 旧数据包没有 lemma 列时自动回退到 v1 查询。
 function Lexicon:row(word)
     local cached = self.cache[word]
     if cached ~= nil then
-        if cached == false then return nil, nil end
-        return cached.rank, cached.base
+        if cached == false then return nil, nil, nil end
+        return cached.rank, cached.base, cached.lemma
     end
     local db = self:open()
     if not db then
-        -- 数据包不可用（缺失 / 不可读）：记成"这个词查不到"，别每个词都去试一遍。
         self.cache[word] = false
-        return nil, nil
+        return nil, nil, nil
     end
-    local ok, stmt = pcall(function() return db:prepare("select rank, base from lex where word = ?") end)
+
+    local has_lemma = true
+    local ok, stmt = pcall(function()
+        return db:prepare("select rank, base, lemma from lex where word = ?")
+    end)
+    if not ok or not stmt then
+        has_lemma = false
+        ok, stmt = pcall(function()
+            return db:prepare("select rank, base from lex where word = ?")
+        end)
+    end
     if not ok or not stmt then
         self.cache[word] = false
-        return nil, nil
+        return nil, nil, nil
     end
+
     local row_ok, row = pcall(function()
         stmt:bind(word)
         return stmt:step()
@@ -201,55 +213,53 @@ function Lexicon:row(word)
     pcall(function() stmt:close() end)
     if not row_ok or not row then
         self.cache[word] = false
-        return nil, nil
+        return nil, nil, nil
     end
+
     local rank = tonumber(row[1])
     local base = row[2]
-    self.cache[word] = { rank = rank, base = base }
-    return rank, base
+    local lemma = has_lemma and row[3] or nil
+    self.cache[word] = { rank = rank, base = base, lemma = lemma }
+    return rank, base, lemma
 end
 
 -- 先查原词，再按后缀规则回退（只接受"回退词本身在词频包内"的情况）。
--- 数据包给出 base 时，难度采用词形自身与 lemma 中更常见的那个排名。
 function Lexicon:resolve(word)
-    local rank, base = self:row(word)
-    if rank then
-        if base and base ~= "" and base ~= word then
-            local base_rank = self:row(base)
-            if base_rank and base_rank < rank then rank = base_rank end
-        end
-        return rank, base
-    end
+    local rank, base, lemma = self:row(word)
+    if rank then return rank, base, lemma end
+
     if word:find("%-") then
         local tail = word:match("([^%-]+)$")
         if tail and tail ~= word then
-            local tail_rank, tail_base = self:row(tail)
-            if tail_rank then return tail_rank, tail_base end
+            local tail_rank, tail_base, tail_lemma = self:row(tail)
+            if tail_rank then return tail_rank, tail_base, tail_lemma end
         end
     end
+
     if #word >= 4 then
         for _, rule in ipairs(SUFFIX_RULES) do
             if word:sub(-#rule.suffix) == rule.suffix then
                 local stem = word:sub(1, #word - #rule.suffix) .. rule.base
                 if #stem >= 3 and stem ~= word then
-                    local stem_rank, stem_base = self:row(stem)
+                    local stem_rank, stem_base, stem_lemma = self:row(stem)
                     if stem_rank then
-                        return stem_rank, stem_base or stem
+                        return stem_rank, stem_base or stem, stem_lemma or stem
                     end
-                    -- 辅音重复（stopped -> stop）
                     local last = stem:sub(-1)
                     if last ~= "" and stem:sub(-2, -2) == last then
                         local short = stem:sub(1, -2)
                         if #short >= 3 then
-                            local short_rank, short_base = self:row(short)
-                            if short_rank then return short_rank, short_base or short end
+                            local short_rank, short_base, short_lemma = self:row(short)
+                            if short_rank then
+                                return short_rank, short_base or short, short_lemma or short
+                            end
                         end
                     end
                 end
             end
         end
     end
-    return nil, nil
+    return nil, nil, nil
 end
 
 --[[--
@@ -274,11 +284,14 @@ function Lexicon:classify(surface, options)
     if not word then return nil end
 
     -- 先解析 lemma：用户可能把 lemma 加入生词本，而页面出现的是其变形。
-    local rank, base = self:resolve(word)
+    local rank, base, lemma = self:resolve(word)
     local resolved_base = base or word
+    local resolved_lemma = lemma or base or word
     local forced_words = options.forced_words
     local forced = forced_words
-        and (forced_words[word] == true or forced_words[resolved_base] == true)
+        and (forced_words[word] == true
+            or forced_words[resolved_base] == true
+            or forced_words[resolved_lemma] == true)
 
     -- 用户明确加入 Vocabulary Builder 的词拥有最高优先级，跳过词频与专名过滤。
     if not forced then
@@ -300,6 +313,7 @@ function Lexicon:classify(surface, options)
     return {
         word = word,
         base = resolved_base,
+        lemma = resolved_lemma,
         rank = rank or Lexicon.RANK_UNKNOWN,
         surface = surface,
         forced = forced and true or nil,
