@@ -9,6 +9,8 @@
 --   wordgloss_page.lua       当前页单词遍历 + 注释装配
 --   wordgloss_epub.lua       EPUB 章节/段落解析（预取需要）
 --   wordgloss_cache.lua      释义缓存与每本书状态（SQLite/WAL）
+--   wordgloss_words.lua      生词本 + WordGloss 已掌握词状态
+--   wordgloss_dict_actions.lua 查词弹窗里的“我已掌握”动作
 --   wordgloss_ui.lua         菜单与对话框
 --   wordgloss_update.lua     自动更新（GitHub Release，校验后替换插件目录）
 --   wordgloss_sha2.lua       SHA-256（只给更新包校验用）
