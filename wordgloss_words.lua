@@ -15,6 +15,8 @@ local Lexicon = require("wordgloss_lexicon")
 
 local Words = {}
 
+local unpack = table.unpack or unpack
+
 local function file_stamp(path)
     local size = lfs.attributes(path, "size")
     local mtime = lfs.attributes(path, "modification")
@@ -142,6 +144,25 @@ end
 -- WordGloss known words (read/write)
 -- ---------------------------------------------------------------------------
 
+function Words:_execute(sql, ...)
+    if not self.cache then return false end
+    local db = self.cache:open()
+    if not db then return false end
+    local args = { ... }
+    local ok, stmt = pcall(function() return db:prepare(sql) end)
+    if not ok or not stmt then return false end
+    local run_ok, err = pcall(function()
+        stmt:bind(unpack(args))
+        stmt:step()
+    end)
+    pcall(function() stmt:close() end)
+    if not run_ok then
+        logger.warn("wordgloss: known_words write failed:", tostring(err))
+        return false
+    end
+    return true
+end
+
 function Words:_ensure_known_table()
     if not self.cache then return false end
     local db = self.cache:open()
@@ -210,7 +231,7 @@ end
 function Words:addKnown(raw)
     local key = self:known_key(raw)
     if not key or not self:_ensure_known_table() then return false end
-    if not self.cache:_execute(
+    if not self:_execute(
         "insert or replace into known_words(word, ts) values(?, ?)", key, os.time()) then
         return false
     end
@@ -224,7 +245,7 @@ function Words:removeKnown(raw)
     local removed = false
     for _, key in ipairs(self:_match_keys(raw)) do
         if known[key] then
-            if self.cache:_execute("delete from known_words where word = ?", key) then
+            if self:_execute("delete from known_words where word = ?", key) then
                 known[key] = nil
                 removed = true
             end
@@ -242,7 +263,7 @@ end
 
 function Words:clearKnown()
     if not self:_ensure_known_table() then return false end
-    if not self.cache:_execute("delete from known_words") then return false end
+    if not self:_execute("delete from known_words") then return false end
     self._known = {}
     return true
 end
