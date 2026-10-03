@@ -85,3 +85,9 @@ Preserve these intentional private downstream behaviors across upstream bumps:
    `say`.
 7. The compact lexicon schema v2 keeps `base` for gloss fallback and `lemma` for
    difficulty/vocabulary matching. Future data-pack rebuilds must preserve that separation.
+8. WordGloss keeps a global `known_words` set in its own SQLite database. A known word
+   has higher priority than Vocabulary Builder forcing, rank, and proper-name rules.
+9. The dictionary popup exposes a WordGloss known-word toggle. Marking a word known
+   refreshes the current page immediately and keeps existing gloss cache entries intact.
+10. Known-word canonicalization uses `base` only when the form already shares its gloss
+    with that base; ranked forms with their own gloss keep an exact-word known key.
